@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chatbot Multi-IA</title>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
     <style>
         * {
             margin: 0;
@@ -386,12 +386,13 @@
     </div>
 
     <script>
-        // Configuração do Supabase
+        // Configuração
         const SUPABASE_URL = 'https://xpfzvpraoglcpymagcpt.supabase.co';
         const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhwZnp2cHJhb2dsY3B5bWFnY3B0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5ODQ4NDYsImV4cCI6MjA3ODU2MDg0Nn0.iH6O9mZCLB_-Zv5cQmFLDwZGaFFYshobOB_-6DV9QT4';
         const N8N_WEBHOOK_URL = 'https://webhook.trakads.online/webhook/trak-ads-chat';
         
-        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        const { createClient } = supabase;
+        const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
         // Estado global
         let conversations = [];
@@ -420,7 +421,7 @@
                 const provider = document.getElementById('providerSelect').value;
                 const personality = document.getElementById('personalitySelect').value;
                 
-                const { data, error } = await supabase
+                const { data, error } = await supabaseClient
                     .from('conversations')
                     .insert([
                         {
@@ -445,7 +446,7 @@
         // Carregar conversas
         async function loadConversations() {
             try {
-                const { data, error } = await supabase
+                const { data, error } = await supabaseClient
                     .from('conversations')
                     .select('*')
                     .order('updated_at', { ascending: false });
@@ -460,7 +461,8 @@
                 }
             } catch (error) {
                 console.error('Erro ao carregar conversas:', error);
-                showError('Erro ao carregar conversas');
+                document.getElementById('conversationsList').innerHTML = 
+                    '<div class="empty-state">Nenhuma conversa ainda.<br>Clique em "Nova Conversa"!</div>';
             }
         }
 
@@ -469,19 +471,18 @@
             const list = document.getElementById('conversationsList');
             
             if (conversations.length === 0) {
-                list.innerHTML = '<div class="empty-state">Nenhuma conversa ainda.<br>Clique em "Nova Conversa" para começar!</div>';
+                list.innerHTML = '<div class="empty-state">Nenhuma conversa ainda.<br>Clique em "Nova Conversa"!</div>';
                 return;
             }
             
             list.innerHTML = conversations.map(conv => {
-                const msgCount = conv.message_count || 0;
                 return `
                     <div class="conversation-item ${conv.id === currentConversationId ? 'active' : ''}" 
                          onclick="loadConversation('${conv.id}')">
                         <button class="delete-btn" onclick="event.stopPropagation(); deleteConversation('${conv.id}')">🗑️</button>
                         <div class="conversation-title">${conv.title || 'Sem título'}</div>
                         <div class="conversation-meta">
-                            ${conv.provider} • ${conv.personality} • ${msgCount} msgs
+                            ${conv.provider} • ${conv.personality}
                         </div>
                     </div>
                 `;
@@ -494,7 +495,7 @@
                 currentConversationId = id;
                 
                 // Buscar dados da conversa
-                const { data: conv, error: convError } = await supabase
+                const { data: conv, error: convError } = await supabaseClient
                     .from('conversations')
                     .select('*')
                     .eq('id', id)
@@ -507,7 +508,7 @@
                 document.getElementById('personalitySelect').value = conv.personality;
                 
                 // Buscar mensagens
-                const { data: msgs, error: msgsError } = await supabase
+                const { data: msgs, error: msgsError } = await supabaseClient
                     .from('messages')
                     .select('*')
                     .eq('conversation_id', id)
@@ -532,7 +533,7 @@
                 const provider = document.getElementById('providerSelect').value;
                 const personality = document.getElementById('personalitySelect').value;
                 
-                const { error } = await supabase
+                const { error } = await supabaseClient
                     .from('conversations')
                     .update({
                         provider: provider,
@@ -555,13 +556,13 @@
             
             try {
                 // Deletar mensagens primeiro
-                await supabase
+                await supabaseClient
                     .from('messages')
                     .delete()
                     .eq('conversation_id', id);
                 
                 // Deletar conversa
-                const { error } = await supabase
+                const { error } = await supabaseClient
                     .from('conversations')
                     .delete()
                     .eq('id', id);
@@ -591,51 +592,23 @@
             // Criar conversa se não existir
             if (!currentConversationId) {
                 await createNewConversation();
+                // Aguardar um pouco para garantir que a conversa foi criada
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+            
+            if (!currentConversationId) {
+                showError('Erro ao criar conversa');
+                return;
             }
             
             try {
                 const provider = document.getElementById('providerSelect').value;
                 const personality = document.getElementById('personalitySelect').value;
                 
-                // Salvar mensagem do usuário
-                const { data: userMsg, error: userError } = await supabase
-                    .from('messages')
-                    .insert([
-                        {
-                            conversation_id: currentConversationId,
-                            role: 'user',
-                            content: text
-                        }
-                    ])
-                    .select()
-                    .single();
-                
-                if (userError) throw userError;
-                
-                // Atualizar título da conversa se for a primeira mensagem
-                if (messages.length === 0) {
-                    const title = text.substring(0, 50) + (text.length > 50 ? '...' : '');
-                    await supabase
-                        .from('conversations')
-                        .update({ 
-                            title: title,
-                            updated_at: new Date().toISOString()
-                        })
-                        .eq('id', currentConversationId);
-                }
-                
-                messages.push(userMsg);
                 input.value = '';
-                renderMessages();
                 showLoading();
                 
-                // Buscar histórico para enviar ao N8N
-                const conversationHistory = messages.map(m => ({
-                    role: m.role,
-                    content: m.content
-                }));
-                
-                // Enviar para N8N
+                // Enviar para N8N (ele vai salvar tudo)
                 const response = await fetch(N8N_WEBHOOK_URL, {
                     method: 'POST',
                     headers: {
@@ -645,42 +618,35 @@
                         message: text,
                         provider: provider,
                         personality: personality,
-                        conversation_id: currentConversationId,
-                        history: conversationHistory
+                        conversation_id: currentConversationId
                     })
                 });
                 
-                if (!response.ok) throw new Error('Erro na resposta do webhook');
+                if (!response.ok) {
+                    throw new Error('Erro na resposta do webhook');
+                }
                 
                 const result = await response.json();
-                const assistantResponse = result.response || result.message || 'Desculpe, não consegui processar sua mensagem.';
+                console.log('Resposta do N8N:', result);
                 
-                // Salvar resposta do assistente
-                const { data: assistantMsg, error: assistantError } = await supabase
-                    .from('messages')
-                    .insert([
-                        {
-                            conversation_id: currentConversationId,
-                            role: 'assistant',
-                            content: assistantResponse
-                        }
-                    ])
-                    .select()
-                    .single();
+                // Recarregar mensagens do banco (N8N já salvou)
+                await loadConversation(currentConversationId);
                 
-                if (assistantError) throw assistantError;
+                // Atualizar título se for primeira mensagem
+                const conv = conversations.find(c => c.id === currentConversationId);
+                if (conv && conv.title === 'Nova Conversa') {
+                    const title = text.substring(0, 50) + (text.length > 50 ? '...' : '');
+                    await supabaseClient
+                        .from('conversations')
+                        .update({ 
+                            title: title,
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('id', currentConversationId);
+                    await loadConversations();
+                }
                 
-                messages.push(assistantMsg);
                 hideLoading();
-                renderMessages();
-                
-                // Atualizar timestamp da conversa
-                await supabase
-                    .from('conversations')
-                    .update({ updated_at: new Date().toISOString() })
-                    .eq('id', currentConversationId);
-                
-                await loadConversations();
                 
             } catch (error) {
                 console.error('Erro ao enviar mensagem:', error);
