@@ -592,7 +592,6 @@
             // Criar conversa se não existir
             if (!currentConversationId) {
                 await createNewConversation();
-                // Aguardar um pouco para garantir que a conversa foi criada
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
             
@@ -604,12 +603,13 @@
             try {
                 const provider = document.getElementById('providerSelect').value;
                 const personality = document.getElementById('personalitySelect').value;
+                const currentMsgCount = messages.length;
                 
                 input.value = '';
                 showLoading();
                 
-                // Enviar para N8N (ele vai salvar tudo)
-                const response = await fetch(N8N_WEBHOOK_URL, {
+                // Enviar para N8N (sem esperar resposta completa)
+                fetch(N8N_WEBHOOK_URL, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -620,17 +620,7 @@
                         personality: personality,
                         conversation_id: currentConversationId
                     })
-                });
-                
-                if (!response.ok) {
-                    throw new Error('Erro na resposta do webhook');
-                }
-                
-                const result = await response.json();
-                console.log('Resposta do N8N:', result);
-                
-                // Recarregar mensagens do banco (N8N já salvou)
-                await loadConversation(currentConversationId);
+                }).catch(err => console.log('Webhook enviado, processando...'));
                 
                 // Atualizar título se for primeira mensagem
                 const conv = conversations.find(c => c.id === currentConversationId);
@@ -646,7 +636,40 @@
                     await loadConversations();
                 }
                 
-                hideLoading();
+                // Polling: verificar novas mensagens a cada 2 segundos
+                const maxAttempts = 30; // 60 segundos no máximo
+                let attempts = 0;
+                
+                const checkForNewMessages = setInterval(async () => {
+                    attempts++;
+                    
+                    try {
+                        const { data: msgs, error } = await supabaseClient
+                            .from('messages')
+                            .select('*')
+                            .eq('conversation_id', currentConversationId)
+                            .order('created_at', { ascending: true });
+                        
+                        if (error) throw error;
+                        
+                        // Se tiver mensagens novas (user + assistant)
+                        if (msgs && msgs.length > currentMsgCount) {
+                            messages = msgs;
+                            renderMessages();
+                            hideLoading();
+                            clearInterval(checkForNewMessages);
+                        }
+                        
+                        // Timeout após 60 segundos
+                        if (attempts >= maxAttempts) {
+                            clearInterval(checkForNewMessages);
+                            hideLoading();
+                            showError('Timeout: A resposta está demorando muito. Tente novamente.');
+                        }
+                    } catch (error) {
+                        console.error('Erro ao verificar mensagens:', error);
+                    }
+                }, 2000); // Verifica a cada 2 segundos
                 
             } catch (error) {
                 console.error('Erro ao enviar mensagem:', error);
