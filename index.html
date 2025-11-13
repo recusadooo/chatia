@@ -332,18 +332,16 @@
 </head>
 <body>
     <div class="main-wrapper">
-        <!-- Sidebar com histórico -->
         <div class="sidebar">
             <div class="sidebar-header">
                 <h2>💬 Conversas</h2>
                 <button class="new-chat-btn" onclick="createNewConversation()">+ Nova Conversa</button>
             </div>
             <div class="conversations-list" id="conversationsList">
-                <div class="empty-state">Carregando conversas...</div>
+                <div class="empty-state">Sem conversas ainda</div>
             </div>
         </div>
 
-        <!-- Chat principal -->
         <div class="container">
             <div class="header">
                 <h1>🤖 Chatbot Multi-IA</h1>
@@ -387,350 +385,276 @@
     </div>
 
     <script>
-        // ========== CONFIGURAÇÕES ==========
-        // IMPORTANTE: Configure suas credenciais aqui
-        const SUPABASE_URL = 'https://xpfzvpraoglcpymagcpt.supabase.co';
-        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhwZnp2cHJhb2dsY3B5bWFnY3B0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5ODQ4NDYsImV4cCI6MjA3ODU2MDg0Nn0.iH6O9mZCLB_-Zv5cQmFLDwZGaFFYshobOB_-6DV9QT4';
-        const N8N_WEBHOOK_URL = 'https://webhook.trakads.online/webhook/trak-ads-chat';
-        
-        // Inicializa Supabase
-        const { createClient } = supabase;
-        const supabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY);
-        
-        // ========== VARIÁVEIS GLOBAIS ==========
-        const chatArea = document.getElementById('chatArea');
-        const messageInput = document.getElementById('messageInput');
-        const sendButton = document.getElementById('sendButton');
-        const providerSelect = document.getElementById('providerSelect');
-        const personalitySelect = document.getElementById('personalitySelect');
-        const conversationsList = document.getElementById('conversationsList');
-        
+        // Estado global
+        let conversations = [];
         let currentConversationId = null;
-        let conversationHistory = [];
-        let isLoading = false;
-        
-        // ========== FUNÇÕES DO SUPABASE ==========
-        
-        async function loadConversations() {
-            try {
-                const { data, error } = await supabaseClient
-                    .from('conversations')
-                    .select('*')
-                    .order('updated_at', { ascending: false });
-                
-                if (error) throw error;
-                
-                displayConversations(data || []);
-            } catch (error) {
-                console.error('Erro ao carregar conversas:', error);
-                showError('Erro ao carregar conversas');
+        let messages = [];
+
+        // Inicialização
+        document.addEventListener('DOMContentLoaded', () => {
+            loadConversations();
+            setupEventListeners();
+        });
+
+        function setupEventListeners() {
+            const sendBtn = document.getElementById('sendButton');
+            const input = document.getElementById('messageInput');
+            
+            sendBtn.addEventListener('click', sendMessage);
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') sendMessage();
+            });
+        }
+
+        // Criar nova conversa
+        function createNewConversation() {
+            const id = 'conv_' + Date.now();
+            const newConv = {
+                id: id,
+                title: 'Nova Conversa',
+                messages: [],
+                provider: document.getElementById('providerSelect').value,
+                personality: document.getElementById('personalitySelect').value,
+                created: new Date().toISOString()
+            };
+            
+            conversations.unshift(newConv);
+            saveConversations();
+            loadConversation(id);
+            renderConversationsList();
+        }
+
+        // Carregar conversas
+        function loadConversations() {
+            const saved = localStorage.getItem('chatbot_conversations');
+            if (saved) {
+                conversations = JSON.parse(saved);
+                renderConversationsList();
+                if (conversations.length > 0) {
+                    loadConversation(conversations[0].id);
+                }
             }
         }
-        
-        function displayConversations(conversations) {
+
+        // Salvar conversas
+        function saveConversations() {
+            localStorage.setItem('chatbot_conversations', JSON.stringify(conversations));
+        }
+
+        // Renderizar lista de conversas
+        function renderConversationsList() {
+            const list = document.getElementById('conversationsList');
+            
             if (conversations.length === 0) {
-                conversationsList.innerHTML = '<div class="empty-state">Nenhuma conversa ainda.<br>Clique em "Nova Conversa"</div>';
+                list.innerHTML = '<div class="empty-state">Sem conversas ainda</div>';
                 return;
             }
             
-            conversationsList.innerHTML = conversations.map(conv => `
+            list.innerHTML = conversations.map(conv => `
                 <div class="conversation-item ${conv.id === currentConversationId ? 'active' : ''}" 
                      onclick="loadConversation('${conv.id}')">
-                    <div class="conversation-title">
-                        ${conv.title}
-                        <button class="delete-btn" onclick="event.stopPropagation(); deleteConversation('${conv.id}')">×</button>
-                    </div>
+                    <button class="delete-btn" onclick="event.stopPropagation(); deleteConversation('${conv.id}')">🗑️</button>
+                    <div class="conversation-title">${conv.title}</div>
                     <div class="conversation-meta">
-                        ${conv.provider} | ${conv.personality} | ${new Date(conv.updated_at).toLocaleDateString('pt-BR')}
+                        ${conv.provider} • ${conv.personality} • ${conv.messages.length} msgs
                     </div>
                 </div>
             `).join('');
         }
-        
-        async function createNewConversation() {
-            try {
-                const provider = providerSelect.value;
-                const personality = personalitySelect.value;
+
+        // Carregar conversa
+        function loadConversation(id) {
+            const conv = conversations.find(c => c.id === id);
+            if (!conv) return;
+            
+            currentConversationId = id;
+            messages = conv.messages;
+            
+            document.getElementById('providerSelect').value = conv.provider;
+            document.getElementById('personalitySelect').value = conv.personality;
+            
+            renderMessages();
+            renderConversationsList();
+        }
+
+        // Deletar conversa
+        function deleteConversation(id) {
+            if (confirm('Deseja realmente excluir esta conversa?')) {
+                conversations = conversations.filter(c => c.id !== id);
+                saveConversations();
                 
-                const { data, error } = await supabase
-                    .from('conversations')
-                    .insert([{
-                        title: `Conversa ${new Date().toLocaleString('pt-BR')}`,
-                        provider: provider,
-                        personality: personality
-                    }])
-                    .select()
-                    .single();
+                if (currentConversationId === id) {
+                    if (conversations.length > 0) {
+                        loadConversation(conversations[0].id);
+                    } else {
+                        currentConversationId = null;
+                        messages = [];
+                        renderMessages();
+                    }
+                }
                 
-                if (error) throw error;
+                renderConversationsList();
+            }
+        }
+
+        // Enviar mensagem
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const text = input.value.trim();
+            
+            if (!text) return;
+            
+            // Criar conversa se não existir
+            if (!currentConversationId) {
+                createNewConversation();
+            }
+            
+            const conv = conversations.find(c => c.id === currentConversationId);
+            const provider = document.getElementById('providerSelect').value;
+            const personality = document.getElementById('personalitySelect').value;
+            
+            // Atualizar título da conversa com primeira mensagem
+            if (conv.messages.length === 0) {
+                conv.title = text.substring(0, 30) + (text.length > 30 ? '...' : '');
+            }
+            
+            // Adicionar mensagem do usuário
+            const userMsg = {
+                role: 'user',
+                content: text,
+                timestamp: new Date().toISOString()
+            };
+            
+            messages.push(userMsg);
+            conv.messages = messages;
+            saveConversations();
+            
+            input.value = '';
+            renderMessages();
+            
+            // Mostrar loading
+            showLoading();
+            
+            // Simular resposta da IA
+            setTimeout(() => {
+                const response = generateResponse(text, provider, personality);
+                const assistantMsg = {
+                    role: 'assistant',
+                    content: response,
+                    timestamp: new Date().toISOString(),
+                    provider: provider,
+                    personality: personality
+                };
                 
-                currentConversationId = data.id;
-                conversationHistory = [];
+                messages.push(assistantMsg);
+                conv.messages = messages;
+                saveConversations();
+                
+                hideLoading();
+                renderMessages();
+                renderConversationsList();
+            }, 1500);
+        }
+
+        // Gerar resposta simulada
+        function generateResponse(userText, provider, personality) {
+            const responses = {
+                claude: {
+                    normal: [
+                        "Entendo sua questão. Deixe-me ajudá-lo com isso de forma clara e objetiva.",
+                        "Essa é uma pergunta interessante. Vou explicar da melhor forma possível.",
+                        "Posso te ajudar com isso. Aqui está minha análise sobre o assunto."
+                    ],
+                    turbinado: [
+                        "🚀 WOW! Essa é INCRÍVEL! Vou te dar a MELHOR resposta que você já viu!",
+                        "💥 SENSACIONAL! Prepare-se para uma resposta ÉPICA sobre isso!",
+                        "⚡ DEMAIS! Vou explodir sua mente com esta resposta TURBINADA!"
+                    ]
+                },
+                chatgpt: {
+                    normal: [
+                        "Claro! Vou te ajudar com isso. Aqui está uma explicação detalhada.",
+                        "Ótima pergunta! Deixe-me compartilhar algumas informações úteis.",
+                        "Com certeza! Vou te fornecer uma resposta completa sobre isso."
+                    ],
+                    turbinado: [
+                        "🔥 ISSO É REVOLUCIONÁRIO! Vou te mostrar uma perspectiva INCRÍVEL!",
+                        "💫 FANTÁSTICO! Prepare-se para ter sua mente EXPLODIDA!",
+                        "🌟 ESPETACULAR! Esta resposta vai MUDAR sua vida!"
+                    ]
+                },
+                gemini: {
+                    normal: [
+                        "Vou processar sua solicitação e fornecer uma resposta precisa.",
+                        "Analisando sua pergunta... Aqui está uma resposta detalhada.",
+                        "Compreendi. Vou te dar uma explicação clara e útil."
+                    ],
+                    turbinado: [
+                        "⭐ EXTRAORDINÁRIO! Vou desvendar TODOS os segredos para você!",
+                        "🎯 PERFEITO! Prepare-se para a resposta mais PODEROSA!",
+                        "🌈 MÁGICO! Vou te entregar uma resposta TRANSCENDENTAL!"
+                    ]
+                }
+            };
+            
+            const opts = responses[provider][personality];
+            return opts[Math.floor(Math.random() * opts.length)] + 
+                   `\n\nSobre "${userText}": Esta é uma resposta simulada. Em um sistema real, aqui estaria a resposta gerada pela API da ${provider}.`;
+        }
+
+        // Renderizar mensagens
+        function renderMessages() {
+            const chatArea = document.getElementById('chatArea');
+            
+            if (messages.length === 0) {
                 chatArea.innerHTML = `
                     <div class="message assistant">
                         <div class="message-content">
-                            Nova conversa iniciada! Como posso ajudar? 😊
+                            Olá! Eu sou seu assistente Multi-IA. Escolha o provedor e a personalidade que prefere e comece a conversar! 😊
                         </div>
                     </div>
                 `;
-                
-                await loadConversations();
-                messageInput.focus();
-            } catch (error) {
-                console.error('Erro ao criar conversa:', error);
-                showError('Erro ao criar nova conversa');
-            }
-        }
-        
-        async function loadConversation(conversationId) {
-            try {
-                currentConversationId = conversationId;
-                
-                // Carrega mensagens da conversa
-                const { data: messages, error } = await supabase
-                    .from('messages')
-                    .select('*')
-                    .eq('conversation_id', conversationId)
-                    .order('created_at', { ascending: true });
-                
-                if (error) throw error;
-                
-                // Carrega informações da conversa
-                const { data: conversation } = await supabase
-                    .from('conversations')
-                    .select('*')
-                    .eq('id', conversationId)
-                    .single();
-                
-                if (conversation) {
-                    providerSelect.value = conversation.provider;
-                    personalitySelect.value = conversation.personality;
-                }
-                
-                // Limpa chat e reconstrói histórico
-                chatArea.innerHTML = '';
-                conversationHistory = [];
-                
-                messages.forEach(msg => {
-                    addMessage(msg.content, msg.role, '', false);
-                    conversationHistory.push({
-                        role: msg.role,
-                        content: msg.content
-                    });
-                });
-                
-                await loadConversations();
-                messageInput.focus();
-            } catch (error) {
-                console.error('Erro ao carregar conversa:', error);
-                showError('Erro ao carregar conversa');
-            }
-        }
-        
-        async function saveMessage(role, content) {
-            if (!currentConversationId) return;
-            
-            try {
-                const { error } = await supabase
-                    .from('messages')
-                    .insert([{
-                        conversation_id: currentConversationId,
-                        role: role,
-                        content: content
-                    }]);
-                
-                if (error) throw error;
-                
-                // Atualiza timestamp da conversa
-                await supabase
-                    .from('conversations')
-                    .update({ updated_at: new Date().toISOString() })
-                    .eq('id', currentConversationId);
-                
-            } catch (error) {
-                console.error('Erro ao salvar mensagem:', error);
-            }
-        }
-        
-        async function deleteConversation(conversationId) {
-            if (!confirm('Deseja realmente excluir esta conversa?')) return;
-            
-            try {
-                const { error } = await supabase
-                    .from('conversations')
-                    .delete()
-                    .eq('id', conversationId);
-                
-                if (error) throw error;
-                
-                if (conversationId === currentConversationId) {
-                    currentConversationId = null;
-                    conversationHistory = [];
-                    chatArea.innerHTML = `
-                        <div class="message assistant">
-                            <div class="message-content">
-                                Conversa excluída. Crie uma nova conversa para começar! 😊
-                            </div>
-                        </div>
-                    `;
-                }
-                
-                await loadConversations();
-            } catch (error) {
-                console.error('Erro ao excluir conversa:', error);
-                showError('Erro ao excluir conversa');
-            }
-        }
-        
-        // ========== FUNÇÕES DE INTERFACE ==========
-        
-        function addMessage(content, type, info = '', save = true) {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `message ${type}`;
-            
-            const contentDiv = document.createElement('div');
-            contentDiv.className = 'message-content';
-            contentDiv.textContent = content;
-            
-            if (info) {
-                const infoDiv = document.createElement('div');
-                infoDiv.className = 'message-info';
-                infoDiv.textContent = info;
-                contentDiv.appendChild(infoDiv);
+                return;
             }
             
-            messageDiv.appendChild(contentDiv);
-            chatArea.appendChild(messageDiv);
+            chatArea.innerHTML = messages.map(msg => `
+                <div class="message ${msg.role}">
+                    <div class="message-content">
+                        ${msg.content}
+                        ${msg.provider ? `<div class="message-info">${msg.provider} - ${msg.personality}</div>` : ''}
+                    </div>
+                </div>
+            `).join('');
+            
             chatArea.scrollTop = chatArea.scrollHeight;
-            
-            if (save && currentConversationId) {
-                saveMessage(type, content);
-            }
         }
-        
+
+        // Loading
         function showLoading() {
+            const chatArea = document.getElementById('chatArea');
             const loadingDiv = document.createElement('div');
             loadingDiv.className = 'message assistant';
-            loadingDiv.id = 'loading';
-            
-            const contentDiv = document.createElement('div');
-            contentDiv.className = 'message-content loading';
-            contentDiv.innerHTML = '<div class="loading-dot"></div><div class="loading-dot"></div><div class="loading-dot"></div>';
-            
-            loadingDiv.appendChild(contentDiv);
+            loadingDiv.id = 'loading-message';
+            loadingDiv.innerHTML = `
+                <div class="message-content">
+                    <div class="loading">
+                        <div class="loading-dot"></div>
+                        <div class="loading-dot"></div>
+                        <div class="loading-dot"></div>
+                    </div>
+                </div>
+            `;
             chatArea.appendChild(loadingDiv);
             chatArea.scrollTop = chatArea.scrollHeight;
+            
+            document.getElementById('sendButton').disabled = true;
         }
-        
+
         function hideLoading() {
-            const loading = document.getElementById('loading');
+            const loading = document.getElementById('loading-message');
             if (loading) loading.remove();
+            document.getElementById('sendButton').disabled = false;
         }
-        
-        function showError(message) {
-            const errorDiv = document.createElement('div');
-            errorDiv.className = 'error';
-            errorDiv.textContent = `❌ Erro: ${message}`;
-            chatArea.appendChild(errorDiv);
-            chatArea.scrollTop = chatArea.scrollHeight;
-            
-            setTimeout(() => errorDiv.remove(), 5000);
-        }
-        
-        // ========== FUNÇÃO PRINCIPAL DE ENVIO ==========
-        
-        async function sendMessage() {
-            const message = messageInput.value.trim();
-            if (!message || isLoading) return;
-            
-            if (!currentConversationId) {
-                await createNewConversation();
-            }
-            
-            const provider = providerSelect.value;
-            const personality = personalitySelect.value;
-            
-            // Adiciona mensagem do usuário
-            addMessage(message, 'user');
-            messageInput.value = '';
-            
-            // Adiciona ao histórico
-            conversationHistory.push({
-                role: 'user',
-                content: message
-            });
-            
-            // Mostra loading
-            isLoading = true;
-            sendButton.disabled = true;
-            showLoading();
-            
-            try {
-                const response = await fetch(N8N_WEBHOOK_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        message: message,
-                        provider: provider,
-                        personality: personality,
-                        history: conversationHistory.slice(-10)
-                    })
-                });
-                
-                if (!response.ok) {
-                    throw new Error(`Erro HTTP: ${response.status}`);
-                }
-                
-                const data = await response.json();
-                
-                hideLoading();
-                
-                if (data.success || data.message) {
-                    const aiMessage = data.message || data.response || 'Resposta recebida';
-                    const info = `${provider} | ${personality}`;
-                    addMessage(aiMessage, 'assistant', info);
-                    
-                    // Adiciona resposta ao histórico
-                    conversationHistory.push({
-                        role: 'assistant',
-                        content: aiMessage
-                    });
-                    
-                    // Recarrega lista de conversas para atualizar timestamp
-                    await loadConversations();
-                } else {
-                    showError('Resposta inválida do servidor');
-                }
-                
-            } catch (error) {
-                hideLoading();
-                showError(error.message || 'Erro ao enviar mensagem');
-                console.error('Erro:', error);
-            } finally {
-                isLoading = false;
-                sendButton.disabled = false;
-                messageInput.focus();
-            }
-        }
-        
-        // ========== EVENT LISTENERS ==========
-        
-        sendButton.addEventListener('click', sendMessage);
-        
-        messageInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                sendMessage();
-            }
-        });
-        
-        // ========== INICIALIZAÇÃO ==========
-        
-        window.addEventListener('load', async () => {
-            await loadConversations();
-            messageInput.focus();
-        });
     </script>
 </body>
 </html>
