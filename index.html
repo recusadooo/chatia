@@ -222,6 +222,7 @@
             padding: 12px 16px;
             border-radius: 15px;
             word-wrap: break-word;
+            white-space: pre-wrap;
         }
         
         .message.user .message-content {
@@ -338,7 +339,7 @@
                 <button class="new-chat-btn" onclick="createNewConversation()">+ Nova Conversa</button>
             </div>
             <div class="conversations-list" id="conversationsList">
-                <div class="empty-state">Sem conversas ainda</div>
+                <div class="empty-state">Carregando conversas...</div>
             </div>
         </div>
 
@@ -348,7 +349,7 @@
                 <div class="controls">
                     <div class="control-group">
                         <label>Provedor</label>
-                        <select id="providerSelect">
+                        <select id="providerSelect" onchange="updateConversationSettings()">
                             <option value="claude">Claude</option>
                             <option value="chatgpt">ChatGPT</option>
                             <option value="gemini">Google Gemini</option>
@@ -356,7 +357,7 @@
                     </div>
                     <div class="control-group">
                         <label>Personalidade</label>
-                        <select id="personalitySelect">
+                        <select id="personalitySelect" onchange="updateConversationSettings()">
                             <option value="normal">Normal</option>
                             <option value="turbinado">Turbinado</option>
                         </select>
@@ -385,6 +386,13 @@
     </div>
 
     <script>
+        // Configuração do Supabase
+        const SUPABASE_URL = 'https://xpfzvpraoglcpymagcpt.supabase.co';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhwZnp2cHJhb2dsY3B5bWFnY3B0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5ODQ4NDYsImV4cCI6MjA3ODU2MDg0Nn0.iH6O9mZCLB_-Zv5cQmFLDwZGaFFYshobOB_-6DV9QT4';
+        const N8N_WEBHOOK_URL = 'https://webhook.trakads.online/webhook/trak-ads-chat';
+        
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
         // Estado global
         let conversations = [];
         let currentConversationId = null;
@@ -407,38 +415,53 @@
         }
 
         // Criar nova conversa
-        function createNewConversation() {
-            const id = 'conv_' + Date.now();
-            const newConv = {
-                id: id,
-                title: 'Nova Conversa',
-                messages: [],
-                provider: document.getElementById('providerSelect').value,
-                personality: document.getElementById('personalitySelect').value,
-                created: new Date().toISOString()
-            };
-            
-            conversations.unshift(newConv);
-            saveConversations();
-            loadConversation(id);
-            renderConversationsList();
-        }
-
-        // Carregar conversas
-        function loadConversations() {
-            const saved = localStorage.getItem('chatbot_conversations');
-            if (saved) {
-                conversations = JSON.parse(saved);
-                renderConversationsList();
-                if (conversations.length > 0) {
-                    loadConversation(conversations[0].id);
-                }
+        async function createNewConversation() {
+            try {
+                const provider = document.getElementById('providerSelect').value;
+                const personality = document.getElementById('personalitySelect').value;
+                
+                const { data, error } = await supabase
+                    .from('conversations')
+                    .insert([
+                        {
+                            title: 'Nova Conversa',
+                            provider: provider,
+                            personality: personality
+                        }
+                    ])
+                    .select()
+                    .single();
+                
+                if (error) throw error;
+                
+                await loadConversations();
+                loadConversation(data.id);
+            } catch (error) {
+                console.error('Erro ao criar conversa:', error);
+                showError('Erro ao criar nova conversa');
             }
         }
 
-        // Salvar conversas
-        function saveConversations() {
-            localStorage.setItem('chatbot_conversations', JSON.stringify(conversations));
+        // Carregar conversas
+        async function loadConversations() {
+            try {
+                const { data, error } = await supabase
+                    .from('conversations')
+                    .select('*')
+                    .order('updated_at', { ascending: false });
+                
+                if (error) throw error;
+                
+                conversations = data || [];
+                renderConversationsList();
+                
+                if (conversations.length > 0 && !currentConversationId) {
+                    loadConversation(conversations[0].id);
+                }
+            } catch (error) {
+                console.error('Erro ao carregar conversas:', error);
+                showError('Erro ao carregar conversas');
+            }
         }
 
         // Renderizar lista de conversas
@@ -446,54 +469,115 @@
             const list = document.getElementById('conversationsList');
             
             if (conversations.length === 0) {
-                list.innerHTML = '<div class="empty-state">Sem conversas ainda</div>';
+                list.innerHTML = '<div class="empty-state">Nenhuma conversa ainda.<br>Clique em "Nova Conversa" para começar!</div>';
                 return;
             }
             
-            list.innerHTML = conversations.map(conv => `
-                <div class="conversation-item ${conv.id === currentConversationId ? 'active' : ''}" 
-                     onclick="loadConversation('${conv.id}')">
-                    <button class="delete-btn" onclick="event.stopPropagation(); deleteConversation('${conv.id}')">🗑️</button>
-                    <div class="conversation-title">${conv.title}</div>
-                    <div class="conversation-meta">
-                        ${conv.provider} • ${conv.personality} • ${conv.messages.length} msgs
+            list.innerHTML = conversations.map(conv => {
+                const msgCount = conv.message_count || 0;
+                return `
+                    <div class="conversation-item ${conv.id === currentConversationId ? 'active' : ''}" 
+                         onclick="loadConversation('${conv.id}')">
+                        <button class="delete-btn" onclick="event.stopPropagation(); deleteConversation('${conv.id}')">🗑️</button>
+                        <div class="conversation-title">${conv.title || 'Sem título'}</div>
+                        <div class="conversation-meta">
+                            ${conv.provider} • ${conv.personality} • ${msgCount} msgs
+                        </div>
                     </div>
-                </div>
-            `).join('');
+                `;
+            }).join('');
         }
 
         // Carregar conversa
-        function loadConversation(id) {
-            const conv = conversations.find(c => c.id === id);
-            if (!conv) return;
+        async function loadConversation(id) {
+            try {
+                currentConversationId = id;
+                
+                // Buscar dados da conversa
+                const { data: conv, error: convError } = await supabase
+                    .from('conversations')
+                    .select('*')
+                    .eq('id', id)
+                    .single();
+                
+                if (convError) throw convError;
+                
+                // Atualizar selects
+                document.getElementById('providerSelect').value = conv.provider;
+                document.getElementById('personalitySelect').value = conv.personality;
+                
+                // Buscar mensagens
+                const { data: msgs, error: msgsError } = await supabase
+                    .from('messages')
+                    .select('*')
+                    .eq('conversation_id', id)
+                    .order('created_at', { ascending: true });
+                
+                if (msgsError) throw msgsError;
+                
+                messages = msgs || [];
+                renderMessages();
+                renderConversationsList();
+            } catch (error) {
+                console.error('Erro ao carregar conversa:', error);
+                showError('Erro ao carregar conversa');
+            }
+        }
+
+        // Atualizar configurações da conversa
+        async function updateConversationSettings() {
+            if (!currentConversationId) return;
             
-            currentConversationId = id;
-            messages = conv.messages;
-            
-            document.getElementById('providerSelect').value = conv.provider;
-            document.getElementById('personalitySelect').value = conv.personality;
-            
-            renderMessages();
-            renderConversationsList();
+            try {
+                const provider = document.getElementById('providerSelect').value;
+                const personality = document.getElementById('personalitySelect').value;
+                
+                const { error } = await supabase
+                    .from('conversations')
+                    .update({
+                        provider: provider,
+                        personality: personality,
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq('id', currentConversationId);
+                
+                if (error) throw error;
+                
+                await loadConversations();
+            } catch (error) {
+                console.error('Erro ao atualizar configurações:', error);
+            }
         }
 
         // Deletar conversa
-        function deleteConversation(id) {
-            if (confirm('Deseja realmente excluir esta conversa?')) {
-                conversations = conversations.filter(c => c.id !== id);
-                saveConversations();
+        async function deleteConversation(id) {
+            if (!confirm('Deseja realmente excluir esta conversa?')) return;
+            
+            try {
+                // Deletar mensagens primeiro
+                await supabase
+                    .from('messages')
+                    .delete()
+                    .eq('conversation_id', id);
+                
+                // Deletar conversa
+                const { error } = await supabase
+                    .from('conversations')
+                    .delete()
+                    .eq('id', id);
+                
+                if (error) throw error;
                 
                 if (currentConversationId === id) {
-                    if (conversations.length > 0) {
-                        loadConversation(conversations[0].id);
-                    } else {
-                        currentConversationId = null;
-                        messages = [];
-                        renderMessages();
-                    }
+                    currentConversationId = null;
+                    messages = [];
+                    renderMessages();
                 }
                 
-                renderConversationsList();
+                await loadConversations();
+            } catch (error) {
+                console.error('Erro ao deletar conversa:', error);
+                showError('Erro ao deletar conversa');
             }
         }
 
@@ -506,100 +590,103 @@
             
             // Criar conversa se não existir
             if (!currentConversationId) {
-                createNewConversation();
+                await createNewConversation();
             }
             
-            const conv = conversations.find(c => c.id === currentConversationId);
-            const provider = document.getElementById('providerSelect').value;
-            const personality = document.getElementById('personalitySelect').value;
-            
-            // Atualizar título da conversa com primeira mensagem
-            if (conv.messages.length === 0) {
-                conv.title = text.substring(0, 30) + (text.length > 30 ? '...' : '');
-            }
-            
-            // Adicionar mensagem do usuário
-            const userMsg = {
-                role: 'user',
-                content: text,
-                timestamp: new Date().toISOString()
-            };
-            
-            messages.push(userMsg);
-            conv.messages = messages;
-            saveConversations();
-            
-            input.value = '';
-            renderMessages();
-            
-            // Mostrar loading
-            showLoading();
-            
-            // Simular resposta da IA
-            setTimeout(() => {
-                const response = generateResponse(text, provider, personality);
-                const assistantMsg = {
-                    role: 'assistant',
-                    content: response,
-                    timestamp: new Date().toISOString(),
-                    provider: provider,
-                    personality: personality
-                };
+            try {
+                const provider = document.getElementById('providerSelect').value;
+                const personality = document.getElementById('personalitySelect').value;
+                
+                // Salvar mensagem do usuário
+                const { data: userMsg, error: userError } = await supabase
+                    .from('messages')
+                    .insert([
+                        {
+                            conversation_id: currentConversationId,
+                            role: 'user',
+                            content: text
+                        }
+                    ])
+                    .select()
+                    .single();
+                
+                if (userError) throw userError;
+                
+                // Atualizar título da conversa se for a primeira mensagem
+                if (messages.length === 0) {
+                    const title = text.substring(0, 50) + (text.length > 50 ? '...' : '');
+                    await supabase
+                        .from('conversations')
+                        .update({ 
+                            title: title,
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('id', currentConversationId);
+                }
+                
+                messages.push(userMsg);
+                input.value = '';
+                renderMessages();
+                showLoading();
+                
+                // Buscar histórico para enviar ao N8N
+                const conversationHistory = messages.map(m => ({
+                    role: m.role,
+                    content: m.content
+                }));
+                
+                // Enviar para N8N
+                const response = await fetch(N8N_WEBHOOK_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: text,
+                        provider: provider,
+                        personality: personality,
+                        conversation_id: currentConversationId,
+                        history: conversationHistory
+                    })
+                });
+                
+                if (!response.ok) throw new Error('Erro na resposta do webhook');
+                
+                const result = await response.json();
+                const assistantResponse = result.response || result.message || 'Desculpe, não consegui processar sua mensagem.';
+                
+                // Salvar resposta do assistente
+                const { data: assistantMsg, error: assistantError } = await supabase
+                    .from('messages')
+                    .insert([
+                        {
+                            conversation_id: currentConversationId,
+                            role: 'assistant',
+                            content: assistantResponse
+                        }
+                    ])
+                    .select()
+                    .single();
+                
+                if (assistantError) throw assistantError;
                 
                 messages.push(assistantMsg);
-                conv.messages = messages;
-                saveConversations();
-                
                 hideLoading();
                 renderMessages();
-                renderConversationsList();
-            }, 1500);
-        }
-
-        // Gerar resposta simulada
-        function generateResponse(userText, provider, personality) {
-            const responses = {
-                claude: {
-                    normal: [
-                        "Entendo sua questão. Deixe-me ajudá-lo com isso de forma clara e objetiva.",
-                        "Essa é uma pergunta interessante. Vou explicar da melhor forma possível.",
-                        "Posso te ajudar com isso. Aqui está minha análise sobre o assunto."
-                    ],
-                    turbinado: [
-                        "🚀 WOW! Essa é INCRÍVEL! Vou te dar a MELHOR resposta que você já viu!",
-                        "💥 SENSACIONAL! Prepare-se para uma resposta ÉPICA sobre isso!",
-                        "⚡ DEMAIS! Vou explodir sua mente com esta resposta TURBINADA!"
-                    ]
-                },
-                chatgpt: {
-                    normal: [
-                        "Claro! Vou te ajudar com isso. Aqui está uma explicação detalhada.",
-                        "Ótima pergunta! Deixe-me compartilhar algumas informações úteis.",
-                        "Com certeza! Vou te fornecer uma resposta completa sobre isso."
-                    ],
-                    turbinado: [
-                        "🔥 ISSO É REVOLUCIONÁRIO! Vou te mostrar uma perspectiva INCRÍVEL!",
-                        "💫 FANTÁSTICO! Prepare-se para ter sua mente EXPLODIDA!",
-                        "🌟 ESPETACULAR! Esta resposta vai MUDAR sua vida!"
-                    ]
-                },
-                gemini: {
-                    normal: [
-                        "Vou processar sua solicitação e fornecer uma resposta precisa.",
-                        "Analisando sua pergunta... Aqui está uma resposta detalhada.",
-                        "Compreendi. Vou te dar uma explicação clara e útil."
-                    ],
-                    turbinado: [
-                        "⭐ EXTRAORDINÁRIO! Vou desvendar TODOS os segredos para você!",
-                        "🎯 PERFEITO! Prepare-se para a resposta mais PODEROSA!",
-                        "🌈 MÁGICO! Vou te entregar uma resposta TRANSCENDENTAL!"
-                    ]
-                }
-            };
-            
-            const opts = responses[provider][personality];
-            return opts[Math.floor(Math.random() * opts.length)] + 
-                   `\n\nSobre "${userText}": Esta é uma resposta simulada. Em um sistema real, aqui estaria a resposta gerada pela API da ${provider}.`;
+                
+                // Atualizar timestamp da conversa
+                await supabase
+                    .from('conversations')
+                    .update({ updated_at: new Date().toISOString() })
+                    .eq('id', currentConversationId);
+                
+                await loadConversations();
+                
+            } catch (error) {
+                console.error('Erro ao enviar mensagem:', error);
+                hideLoading();
+                showError('Erro ao enviar mensagem: ' + error.message);
+            }
         }
 
         // Renderizar mensagens
@@ -617,14 +704,21 @@
                 return;
             }
             
-            chatArea.innerHTML = messages.map(msg => `
-                <div class="message ${msg.role}">
-                    <div class="message-content">
-                        ${msg.content}
-                        ${msg.provider ? `<div class="message-info">${msg.provider} - ${msg.personality}</div>` : ''}
+            chatArea.innerHTML = messages.map(msg => {
+                const time = new Date(msg.created_at).toLocaleTimeString('pt-BR', { 
+                    hour: '2-digit', 
+                    minute: '2-digit' 
+                });
+                
+                return `
+                    <div class="message ${msg.role}">
+                        <div class="message-content">
+                            ${msg.content}
+                            <div class="message-info">${time}</div>
+                        </div>
                     </div>
-                </div>
-            `).join('');
+                `;
+            }).join('');
             
             chatArea.scrollTop = chatArea.scrollHeight;
         }
@@ -648,12 +742,26 @@
             chatArea.scrollTop = chatArea.scrollHeight;
             
             document.getElementById('sendButton').disabled = true;
+            document.getElementById('messageInput').disabled = true;
         }
 
         function hideLoading() {
             const loading = document.getElementById('loading-message');
             if (loading) loading.remove();
             document.getElementById('sendButton').disabled = false;
+            document.getElementById('messageInput').disabled = false;
+        }
+
+        // Mostrar erro
+        function showError(message) {
+            const chatArea = document.getElementById('chatArea');
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error';
+            errorDiv.textContent = message;
+            chatArea.appendChild(errorDiv);
+            chatArea.scrollTop = chatArea.scrollHeight;
+            
+            setTimeout(() => errorDiv.remove(), 5000);
         }
     </script>
 </body>
