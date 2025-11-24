@@ -329,6 +329,133 @@
             color: #999;
             font-size: 14px;
         }
+
+        /* Status indicator */
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 6px;
+            background: #4CAF50;
+            animation: pulse 2s infinite;
+        }
+
+        .status-indicator.offline {
+            background: #ff4444;
+            animation: none;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Improved input */
+        #messageInput:disabled {
+            background: #f5f5f5;
+            cursor: not-allowed;
+        }
+
+        /* Provider badges */
+        .provider-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 10px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .provider-badge.claude {
+            background: #d4a574;
+            color: white;
+        }
+
+        .provider-badge.chatgpt {
+            background: #10a37f;
+            color: white;
+        }
+
+        .provider-badge.gemini {
+            background: #4285f4;
+            color: white;
+        }
+
+        /* Success notification */
+        .success {
+            background: #4CAF50;
+            color: white;
+            padding: 10px;
+            border-radius: 8px;
+            margin: 10px;
+            text-align: center;
+        }
+
+        /* Responsive improvements */
+        @media (max-width: 900px) {
+            .main-wrapper {
+                flex-direction: column;
+                height: auto;
+                min-height: 90vh;
+            }
+
+            .sidebar {
+                width: 100%;
+                max-height: 200px;
+            }
+
+            .container {
+                min-height: 70vh;
+            }
+
+            .message-content {
+                max-width: 85%;
+            }
+        }
+
+        /* Scrollbar styling */
+        .chat-area::-webkit-scrollbar,
+        .conversations-list::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chat-area::-webkit-scrollbar-track,
+        .conversations-list::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 3px;
+        }
+
+        .chat-area::-webkit-scrollbar-thumb,
+        .conversations-list::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 3px;
+        }
+
+        .chat-area::-webkit-scrollbar-thumb:hover,
+        .conversations-list::-webkit-scrollbar-thumb:hover {
+            background: #a1a1a1;
+        }
+
+        /* Tooltip for message time */
+        .message-content {
+            position: relative;
+        }
+
+        /* Focus styles for accessibility */
+        button:focus,
+        select:focus,
+        input:focus {
+            outline: 2px solid #667eea;
+            outline-offset: 2px;
+        }
+
+        /* Loading text animation */
+        .loading-text {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
     </style>
 </head>
 <body>
@@ -390,7 +517,7 @@
         const SUPABASE_URL = 'https://xpfzvpraoglcpymagcpt.supabase.co';
         const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhwZnp2cHJhb2dsY3B5bWFnY3B0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI5ODQ4NDYsImV4cCI6MjA3ODU2MDg0Nn0.iH6O9mZCLB_-Zv5cQmFLDwZGaFFYshobOB_-6DV9QT4';
         const N8N_WEBHOOK_URL = 'https://webhook.trakads.online/webhook/trak-ads-chat';
-        
+
         const { createClient } = supabase;
         const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -398,6 +525,15 @@
         let conversations = [];
         let currentConversationId = null;
         let messages = [];
+        let realtimeSubscription = null;
+        let isProcessing = false;
+
+        // Constantes
+        const MAX_MESSAGE_LENGTH = 10000;
+        const WEBHOOK_TIMEOUT = 30000;
+        const MAX_RETRY_ATTEMPTS = 3;
+        const POLLING_INTERVAL = 1500;
+        const MAX_POLLING_ATTEMPTS = 40; // 60 segundos
 
         // Inicialização
         document.addEventListener('DOMContentLoaded', () => {
@@ -408,19 +544,67 @@
         function setupEventListeners() {
             const sendBtn = document.getElementById('sendButton');
             const input = document.getElementById('messageInput');
-            
+
             sendBtn.addEventListener('click', sendMessage);
             input.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') sendMessage();
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
+
+            // Mostrar contador de caracteres
+            input.addEventListener('input', () => {
+                const remaining = MAX_MESSAGE_LENGTH - input.value.length;
+                if (remaining < 500) {
+                    input.style.borderColor = remaining < 100 ? '#ff4444' : '#ffaa00';
+                } else {
+                    input.style.borderColor = '';
+                }
             });
         }
 
-        // Criar nova conversa
-        async function createNewConversation() {
+        // Função auxiliar para retry com backoff exponencial
+        async function fetchWithRetry(url, options, maxRetries = MAX_RETRY_ATTEMPTS) {
+            let lastError;
+
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT);
+
+                    const response = await fetch(url, {
+                        ...options,
+                        signal: controller.signal
+                    });
+
+                    clearTimeout(timeoutId);
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+
+                    return response;
+                } catch (error) {
+                    lastError = error;
+                    console.warn(`Tentativa ${attempt + 1}/${maxRetries} falhou:`, error.message);
+
+                    if (attempt < maxRetries - 1) {
+                        const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                }
+            }
+
+            throw lastError;
+        }
+
+        // Criar nova conversa (retorna o ID da conversa criada)
+        async function createNewConversation(autoSelect = true) {
             try {
                 const provider = document.getElementById('providerSelect').value;
                 const personality = document.getElementById('personalitySelect').value;
-                
+
                 const { data, error } = await supabaseClient
                     .from('conversations')
                     .insert([
@@ -432,14 +616,20 @@
                     ])
                     .select()
                     .single();
-                
+
                 if (error) throw error;
-                
+
                 await loadConversations();
-                loadConversation(data.id);
+
+                if (autoSelect) {
+                    await loadConversation(data.id);
+                }
+
+                return data.id;
             } catch (error) {
                 console.error('Erro ao criar conversa:', error);
-                showError('Erro ao criar nova conversa');
+                showError('Erro ao criar nova conversa. Verifique sua conexão.');
+                return null;
             }
         }
 
@@ -450,75 +640,141 @@
                     .from('conversations')
                     .select('*')
                     .order('updated_at', { ascending: false });
-                
+
                 if (error) throw error;
-                
+
                 conversations = data || [];
                 renderConversationsList();
-                
+
                 if (conversations.length > 0 && !currentConversationId) {
                     loadConversation(conversations[0].id);
                 }
             } catch (error) {
                 console.error('Erro ao carregar conversas:', error);
-                document.getElementById('conversationsList').innerHTML = 
-                    '<div class="empty-state">Nenhuma conversa ainda.<br>Clique em "Nova Conversa"!</div>';
+                document.getElementById('conversationsList').innerHTML =
+                    '<div class="empty-state">Erro ao carregar.<br>Verifique sua conexão.</div>';
             }
         }
 
         // Renderizar lista de conversas
         function renderConversationsList() {
             const list = document.getElementById('conversationsList');
-            
+
             if (conversations.length === 0) {
                 list.innerHTML = '<div class="empty-state">Nenhuma conversa ainda.<br>Clique em "Nova Conversa"!</div>';
                 return;
             }
-            
+
+            // Mapeamento de providers para exibição
+            const providerNames = {
+                'claude': 'Claude',
+                'chatgpt': 'ChatGPT',
+                'gemini': 'Gemini'
+            };
+
+            const personalityNames = {
+                'normal': 'Normal',
+                'turbinado': 'Turbinado'
+            };
+
             list.innerHTML = conversations.map(conv => {
+                const providerDisplay = providerNames[conv.provider] || conv.provider;
+                const personalityDisplay = personalityNames[conv.personality] || conv.personality;
+
                 return `
-                    <div class="conversation-item ${conv.id === currentConversationId ? 'active' : ''}" 
+                    <div class="conversation-item ${conv.id === currentConversationId ? 'active' : ''}"
                          onclick="loadConversation('${conv.id}')">
                         <button class="delete-btn" onclick="event.stopPropagation(); deleteConversation('${conv.id}')">🗑️</button>
-                        <div class="conversation-title">${conv.title || 'Sem título'}</div>
+                        <div class="conversation-title">${escapeHtml(conv.title || 'Sem título')}</div>
                         <div class="conversation-meta">
-                            ${conv.provider} • ${conv.personality}
+                            ${providerDisplay} • ${personalityDisplay}
                         </div>
                     </div>
                 `;
             }).join('');
         }
 
+        // Escapar HTML para prevenir XSS
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Configurar Realtime subscription
+        function setupRealtimeSubscription(conversationId) {
+            // Remover subscription anterior se existir
+            if (realtimeSubscription) {
+                supabaseClient.removeChannel(realtimeSubscription);
+            }
+
+            realtimeSubscription = supabaseClient
+                .channel(`messages:${conversationId}`)
+                .on('postgres_changes',
+                    {
+                        event: 'INSERT',
+                        schema: 'public',
+                        table: 'messages',
+                        filter: `conversation_id=eq.${conversationId}`
+                    },
+                    (payload) => {
+                        console.log('Nova mensagem via Realtime:', payload);
+                        const newMessage = payload.new;
+
+                        // Verificar se a mensagem já existe no array
+                        const exists = messages.some(m => m.id === newMessage.id);
+                        if (!exists) {
+                            messages.push(newMessage);
+                            messages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+                            renderMessages();
+
+                            // Se recebeu resposta do assistente, esconder loading
+                            if (newMessage.role === 'assistant') {
+                                hideLoading();
+                                isProcessing = false;
+                            }
+                        }
+                    }
+                )
+                .subscribe((status) => {
+                    console.log('Realtime subscription status:', status);
+                });
+        }
+
         // Carregar conversa
         async function loadConversation(id) {
             try {
                 currentConversationId = id;
-                
+
                 // Buscar dados da conversa
                 const { data: conv, error: convError } = await supabaseClient
                     .from('conversations')
                     .select('*')
                     .eq('id', id)
                     .single();
-                
+
                 if (convError) throw convError;
-                
+
                 // Atualizar selects
                 document.getElementById('providerSelect').value = conv.provider;
                 document.getElementById('personalitySelect').value = conv.personality;
-                
+
                 // Buscar mensagens
                 const { data: msgs, error: msgsError } = await supabaseClient
                     .from('messages')
                     .select('*')
                     .eq('conversation_id', id)
                     .order('created_at', { ascending: true });
-                
+
                 if (msgsError) throw msgsError;
-                
+
                 messages = msgs || [];
                 renderMessages();
                 renderConversationsList();
+
+                // Configurar Realtime para esta conversa
+                setupRealtimeSubscription(id);
+
             } catch (error) {
                 console.error('Erro ao carregar conversa:', error);
                 showError('Erro ao carregar conversa');
@@ -528,11 +784,11 @@
         // Atualizar configurações da conversa
         async function updateConversationSettings() {
             if (!currentConversationId) return;
-            
+
             try {
                 const provider = document.getElementById('providerSelect').value;
                 const personality = document.getElementById('personalitySelect').value;
-                
+
                 const { error } = await supabaseClient
                     .from('conversations')
                     .update({
@@ -541,40 +797,48 @@
                         updated_at: new Date().toISOString()
                     })
                     .eq('id', currentConversationId);
-                
+
                 if (error) throw error;
-                
+
                 await loadConversations();
             } catch (error) {
                 console.error('Erro ao atualizar configurações:', error);
+                showError('Erro ao atualizar configurações');
             }
         }
 
         // Deletar conversa
         async function deleteConversation(id) {
             if (!confirm('Deseja realmente excluir esta conversa?')) return;
-            
+
             try {
                 // Deletar mensagens primeiro
                 await supabaseClient
                     .from('messages')
                     .delete()
                     .eq('conversation_id', id);
-                
+
                 // Deletar conversa
                 const { error } = await supabaseClient
                     .from('conversations')
                     .delete()
                     .eq('id', id);
-                
+
                 if (error) throw error;
-                
+
                 if (currentConversationId === id) {
                     currentConversationId = null;
                     messages = [];
+
+                    // Remover subscription
+                    if (realtimeSubscription) {
+                        supabaseClient.removeChannel(realtimeSubscription);
+                        realtimeSubscription = null;
+                    }
+
                     renderMessages();
                 }
-                
+
                 await loadConversations();
             } catch (error) {
                 console.error('Erro ao deletar conversa:', error);
@@ -582,138 +846,213 @@
             }
         }
 
+        // Salvar mensagem do usuário no banco
+        async function saveUserMessage(conversationId, content) {
+            const { data, error } = await supabaseClient
+                .from('messages')
+                .insert([
+                    {
+                        conversation_id: conversationId,
+                        role: 'user',
+                        content: content
+                    }
+                ])
+                .select()
+                .single();
+
+            if (error) throw error;
+            return data;
+        }
+
         // Enviar mensagem
         async function sendMessage() {
+            if (isProcessing) return;
+
             const input = document.getElementById('messageInput');
             const text = input.value.trim();
-            
-            if (!text) return;
-            
-            // Criar conversa se não existir
-            if (!currentConversationId) {
-                await createNewConversation();
-                await new Promise(resolve => setTimeout(resolve, 500));
-            }
-            
-            if (!currentConversationId) {
-                showError('Erro ao criar conversa');
+
+            // Validação de entrada
+            if (!text) {
                 return;
             }
-            
+
+            if (text.length > MAX_MESSAGE_LENGTH) {
+                showError(`Mensagem muito longa. Máximo: ${MAX_MESSAGE_LENGTH} caracteres.`);
+                return;
+            }
+
+            isProcessing = true;
+
             try {
+                // Criar conversa se não existir
+                if (!currentConversationId) {
+                    const newConvId = await createNewConversation(false);
+                    if (!newConvId) {
+                        isProcessing = false;
+                        return;
+                    }
+                    currentConversationId = newConvId;
+
+                    // Configurar Realtime para a nova conversa
+                    setupRealtimeSubscription(currentConversationId);
+                }
+
                 const provider = document.getElementById('providerSelect').value;
                 const personality = document.getElementById('personalitySelect').value;
-                const currentMsgCount = messages.length;
-                
+
+                // Limpar input imediatamente
                 input.value = '';
+                input.style.borderColor = '';
+
+                // 1. PRIMEIRO: Salvar mensagem do usuário no banco
+                const savedMessage = await saveUserMessage(currentConversationId, text);
+
+                // 2. Adicionar mensagem à lista local e renderizar
+                messages.push(savedMessage);
+                renderMessages();
+
+                // 3. Mostrar loading
                 showLoading();
-                
-                // Enviar para N8N (sem esperar resposta completa)
-                fetch(N8N_WEBHOOK_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        message: text,
-                        provider: provider,
-                        personality: personality,
-                        conversation_id: currentConversationId
-                    })
-                }).catch(err => console.log('Webhook enviado, processando...'));
-                
-                // Atualizar título se for primeira mensagem
+
+                // 4. Atualizar título se for primeira mensagem
                 const conv = conversations.find(c => c.id === currentConversationId);
                 if (conv && conv.title === 'Nova Conversa') {
                     const title = text.substring(0, 50) + (text.length > 50 ? '...' : '');
                     await supabaseClient
                         .from('conversations')
-                        .update({ 
+                        .update({
                             title: title,
                             updated_at: new Date().toISOString()
                         })
                         .eq('id', currentConversationId);
                     await loadConversations();
                 }
-                
-                // Polling: verificar novas mensagens a cada 2 segundos
-                const maxAttempts = 30; // 60 segundos no máximo
-                let attempts = 0;
-                
-                const checkForNewMessages = setInterval(async () => {
-                    attempts++;
-                    
-                    try {
-                        const { data: msgs, error } = await supabaseClient
-                            .from('messages')
-                            .select('*')
-                            .eq('conversation_id', currentConversationId)
-                            .order('created_at', { ascending: true });
-                        
-                        if (error) throw error;
-                        
-                        // Se tiver mensagens novas (user + assistant)
-                        if (msgs && msgs.length > currentMsgCount) {
-                            messages = msgs;
-                            renderMessages();
-                            hideLoading();
-                            clearInterval(checkForNewMessages);
-                        }
-                        
-                        // Timeout após 60 segundos
-                        if (attempts >= maxAttempts) {
-                            clearInterval(checkForNewMessages);
-                            hideLoading();
-                            showError('Timeout: A resposta está demorando muito. Tente novamente.');
-                        }
-                    } catch (error) {
-                        console.error('Erro ao verificar mensagens:', error);
-                    }
-                }, 2000); // Verifica a cada 2 segundos
-                
+
+                // 5. Enviar para N8N com retry
+                try {
+                    await fetchWithRetry(N8N_WEBHOOK_URL, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            message: text,
+                            provider: provider,
+                            personality: personality,
+                            conversation_id: currentConversationId
+                        })
+                    });
+                    console.log('Webhook enviado com sucesso');
+                } catch (webhookError) {
+                    console.error('Erro no webhook após tentativas:', webhookError);
+                    showError('Erro ao processar mensagem. O serviço pode estar indisponível.');
+                }
+
+                // 6. Polling de backup (caso o Realtime falhe)
+                startPollingForResponse(messages.length);
+
             } catch (error) {
                 console.error('Erro ao enviar mensagem:', error);
                 hideLoading();
+                isProcessing = false;
                 showError('Erro ao enviar mensagem: ' + error.message);
             }
+        }
+
+        // Polling de backup para verificar resposta
+        function startPollingForResponse(expectedMinMessages) {
+            let attempts = 0;
+
+            const pollInterval = setInterval(async () => {
+                attempts++;
+
+                // Se já recebeu via Realtime, parar polling
+                if (!isProcessing) {
+                    clearInterval(pollInterval);
+                    return;
+                }
+
+                try {
+                    const { data: msgs, error } = await supabaseClient
+                        .from('messages')
+                        .select('*')
+                        .eq('conversation_id', currentConversationId)
+                        .order('created_at', { ascending: true });
+
+                    if (error) throw error;
+
+                    // Verificar se há mensagem do assistente nova
+                    if (msgs && msgs.length > expectedMinMessages) {
+                        const lastMsg = msgs[msgs.length - 1];
+                        if (lastMsg.role === 'assistant') {
+                            messages = msgs;
+                            renderMessages();
+                            hideLoading();
+                            isProcessing = false;
+                            clearInterval(pollInterval);
+                        }
+                    }
+
+                    // Timeout
+                    if (attempts >= MAX_POLLING_ATTEMPTS) {
+                        clearInterval(pollInterval);
+                        hideLoading();
+                        isProcessing = false;
+                        showError('Timeout: A resposta está demorando muito. A IA pode estar ocupada, tente novamente em alguns instantes.');
+                    }
+                } catch (error) {
+                    console.error('Erro no polling:', error);
+                }
+            }, POLLING_INTERVAL);
         }
 
         // Renderizar mensagens
         function renderMessages() {
             const chatArea = document.getElementById('chatArea');
-            
+
             if (messages.length === 0) {
                 chatArea.innerHTML = `
                     <div class="message assistant">
                         <div class="message-content">
-                            Olá! Eu sou seu assistente Multi-IA. Escolha o provedor e a personalidade que prefere e comece a conversar! 😊
+                            Olá! Eu sou seu assistente Multi-IA. Escolha o provedor e a personalidade que prefere e comece a conversar!
+                            <br><br>
+                            <strong>Provedores disponíveis:</strong><br>
+                            • <strong>Claude</strong> - Assistente da Anthropic<br>
+                            • <strong>ChatGPT</strong> - Assistente da OpenAI<br>
+                            • <strong>Gemini</strong> - Assistente do Google<br><br>
+                            <strong>Personalidades:</strong><br>
+                            • <strong>Normal</strong> - Respostas profissionais e equilibradas<br>
+                            • <strong>Turbinado</strong> - Respostas mais entusiasmadas e criativas
                         </div>
                     </div>
                 `;
                 return;
             }
-            
+
             chatArea.innerHTML = messages.map(msg => {
-                const time = new Date(msg.created_at).toLocaleTimeString('pt-BR', { 
-                    hour: '2-digit', 
-                    minute: '2-digit' 
+                const time = new Date(msg.created_at).toLocaleTimeString('pt-BR', {
+                    hour: '2-digit',
+                    minute: '2-digit'
                 });
-                
+
                 return `
                     <div class="message ${msg.role}">
                         <div class="message-content">
-                            ${msg.content}
+                            ${escapeHtml(msg.content)}
                             <div class="message-info">${time}</div>
                         </div>
                     </div>
                 `;
             }).join('');
-            
+
             chatArea.scrollTop = chatArea.scrollHeight;
         }
 
         // Loading
         function showLoading() {
+            // Remover loading anterior se existir
+            hideLoading();
+
             const chatArea = document.getElementById('chatArea');
             const loadingDiv = document.createElement('div');
             loadingDiv.className = 'message assistant';
@@ -725,11 +1064,12 @@
                         <div class="loading-dot"></div>
                         <div class="loading-dot"></div>
                     </div>
+                    <div class="message-info" style="margin-top: 8px;">Processando...</div>
                 </div>
             `;
             chatArea.appendChild(loadingDiv);
             chatArea.scrollTop = chatArea.scrollHeight;
-            
+
             document.getElementById('sendButton').disabled = true;
             document.getElementById('messageInput').disabled = true;
         }
@@ -739,6 +1079,7 @@
             if (loading) loading.remove();
             document.getElementById('sendButton').disabled = false;
             document.getElementById('messageInput').disabled = false;
+            document.getElementById('messageInput').focus();
         }
 
         // Mostrar erro
@@ -749,9 +1090,20 @@
             errorDiv.textContent = message;
             chatArea.appendChild(errorDiv);
             chatArea.scrollTop = chatArea.scrollHeight;
-            
-            setTimeout(() => errorDiv.remove(), 5000);
+
+            setTimeout(() => {
+                if (errorDiv.parentNode) {
+                    errorDiv.remove();
+                }
+            }, 7000);
         }
+
+        // Cleanup ao sair da página
+        window.addEventListener('beforeunload', () => {
+            if (realtimeSubscription) {
+                supabaseClient.removeChannel(realtimeSubscription);
+            }
+        });
     </script>
 </body>
 </html>
